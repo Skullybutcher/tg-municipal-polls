@@ -1,136 +1,279 @@
+import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-from tabulate import tabulate
 import urllib3
+import concurrent.futures
+import pandas as pd
+import time
+import random
 
-# Tell Python to ignore SSL certificate warnings, which are common on gov sites
+# Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-BASE_URL = "https://tsec.gov.in"
-ACTION_URL = "https://tsec.gov.in/knowPRUrban.se"
+# --- HARDCODED CONFIGURATION FOR TANDUR ---
+DISTRICT_ID = "24"  # Vikarabad
+ULB_ID = "1"        # Tandur
+YEAR = "2026"
+ELECTION_ID = "190"
+TOTAL_WARDS = 36    # Tandur has 36 wards
+BASE_URL = "https://tsec.gov.in/knowPRUrban.se"
 
-def get_election_data(ulb_id, ward_id):
-    print(f"\n[i] Connecting to TSEC server... please wait.")
+# --- PAGE CONFIG ---
+st.set_page_config(
+    page_title="Tandur Election Tracker",
+    page_icon="🗳️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-    # Use a session to keep cookies across requests
+# --- SESSION STATE SETUP ---
+if 'view' not in st.session_state:
+    st.session_state.view = 'dashboard'
+if 'selected_ward' not in st.session_state:
+    st.session_state.selected_ward = None
+
+# --- ROBUST NETWORK FUNCTION ---
+
+def get_session():
+    """Creates a robust session with browser headers"""
     session = requests.Session()
-    # Fake user agent so we look like a browser
     session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Referer': 'https://tsec.gov.in/'
     })
+    return session
 
-    try:
-        # 1. GET Request: Load the initial page to get the security token
-        print("[i] Fetching security token...")
-        initial_response = session.get(ACTION_URL, verify=False, timeout=15)
-        initial_soup = BeautifulSoup(initial_response.content, 'html.parser')
-
-        # Find the hidden Struts token field
-        token_input = initial_soup.find('input', attrs={'name': 'org.apache.struts.taglib.html.TOKEN'})
-        if not token_input:
-            print("[!] Error: Could not find security token on page.")
-            return
-        token = token_input['value']
-
-        # 2. Prepare payload based on your previous HTML inputs
-        # Note: We are hardcoding District 24 (Vikarabad), Year 2026, and Election 190 
-        # based on the default selections in the HTML you provided previously.
-        payload = {
-            'org.apache.struts.taglib.html.TOKEN': token,
-            'mode': 'getULBWMDetails',
-            'property(knowYour)': 'WM',
-            'property(year)': '2026',       # Hardcoded based on your provided HTML
-            'property(electionFor)': '190', # Hardcoded based on your provided HTML
-            'property(district_id)': '24',  # Hardcoded Vikarabad based on HTML
-            'property(ulb_id)': str(ulb_id),   # USER INPUT
-            'property(ward_id)': str(ward_id), # USER INPUT
-            'property(typeOfReport)': 'A'   # 'A' for All candidates
-        }
-
-        # 3. POST Request: Send the data
-        print(f"[i] Fetching data for ULB: {ulb_id}, Ward: {ward_id}...")
-        post_response = session.post(ACTION_URL, data=payload, verify=False, timeout=30)
-        
-        # 4. Parse the results
-        parse_and_display_results(post_response.content)
-
-    except requests.exceptions.RequestException as e:
-        print(f"\n[!] Connection Error: {e}")
-
-def parse_and_display_results(html_content):
-    soup = BeautifulSoup(html_content, 'html.parser')
-
-    # Find the specific results table by its ID
-    table = soup.find('table', id='GridView1')
-
-    if not table:
-        print("\n[!] Could not find results table. Check your ULB/Ward IDs.")
-        # Sometimes errors are shown in alert boxes in the HTML, complex to parse.
-        return
-
-    # --- Extract Table Headers ---
-    headers = []
-    header_row = table.find('tr')
-    if header_row:
-        headers = [th.get_text(strip=True) for th in header_row.find_all('th')]
-
-    # --- Extract Table Data ---
-    data = []
-    # Skip the first row (headers)
-    rows = table.find_all('tr')[1:]
-
-    summary_text = ""
-
-    for row in rows:
-        # The table sometimes has a summary row spanning all columns right after headers
-        # Example: "WARD Name : 33 , Reserved for : UR(G)..."
-        if row.find('td', attrs={'colspan': True}):
-            summary_text = row.get_text(strip=True)
-            continue
-            
-        cells = row.find_all('td')
-        if not cells:
-            continue
-            
-        row_data = [cell.get_text(strip=True) for cell in cells]
-        data.append(row_data)
-
-    # --- Terminal Output ---
-    if summary_text:
-        print(f"\n{'='*60}")
-        # Wrap text nicely for terminal width
-        import textwrap
-        print(textwrap.fill(summary_text, width=80))
-        print(f"{'='*60}\n")
-
-    if data and headers:
-        # Use tabulate for pretty terminal printing
-        print(tabulate(data, headers=headers, tablefmt="fancy_grid"))
-    else:
-        print("[!] No candidate data found for this selection.")
-
-
-# --- Main Terminal Loop ---
-if __name__ == "__main__":
-    print("--- TSEC Urban Election Results Terminal App ---")
-    print("Note: Currently hardcoded for District: Vikarabad (ID 24), Year: 2026")
-    print("Type 'exit' to quit.\n")
+def fetch_ward_data_with_retry(ward_num, retries=3):
+    """
+    Tries to fetch data. If it fails, waits and retries automatically.
+    """
+    session = get_session()
     
-    while True:
+    for attempt in range(retries):
         try:
-            ulb_input = input("Enter ULB ID (e.g., 1 for Tandur): ").strip()
-            if ulb_input.lower() == 'exit': break
+            # 1. Get Security Token
+            time.sleep(random.uniform(0.1, 0.5)) 
             
-            ward_input = input("Enter Ward Number ID (e.g., 33): ").strip()
-            if ward_input.lower() == 'exit': break
-
-            if not ulb_input or not ward_input:
-                print("Both IDs are required.")
-                continue
+            resp = session.get(BASE_URL, verify=False, timeout=15)
+            soup = BeautifulSoup(resp.content, 'html.parser')
+            token_input = soup.find('input', attrs={'name': 'org.apache.struts.taglib.html.TOKEN'})
+            
+            if not token_input:
+                raise ValueError("Token not found")
                 
-            get_election_data(ulb_input, ward_input)
-            print("\n" + "-"*30 + "\n")
+            token = token_input['value']
+
+            # 2. Prepare Payload
+            payload = {
+                'org.apache.struts.taglib.html.TOKEN': token,
+                'mode': 'getULBWMDetails',
+                'property(knowYour)': 'WM',
+                'property(year)': YEAR,
+                'property(electionFor)': ELECTION_ID,
+                'property(district_id)': DISTRICT_ID,
+                'property(ulb_id)': ULB_ID,
+                'property(ward_id)': str(ward_num),
+                'property(typeOfReport)': 'A' 
+            }
+
+            # 3. Post Data
+            post_resp = session.post(BASE_URL, data=payload, verify=False, timeout=20)
             
-        except KeyboardInterrupt:
-            print("\nExiting.")
-            break
+            # 4. Check Validity
+            if post_resp.status_code != 200:
+                raise ValueError(f"Status Code: {post_resp.status_code}")
+
+            post_soup = BeautifulSoup(post_resp.content, 'html.parser')
+            table = post_soup.find('table', id='GridView1')
+            
+            if not table:
+                return {"ward": ward_num, "status": "Pending", "summary": {}, "candidates": []}
+
+            # 5. Parse Data
+            rows = post_soup.find('table', id='GridView1').find_all('tr')
+            
+            summary_data = {}
+            candidate_rows = []
+
+            for row in rows[1:]:
+                if row.find('td', attrs={'colspan': True}):
+                    text = row.get_text(strip=True)
+                    parts = text.split(',')
+                    for part in parts:
+                        if ':' in part:
+                            key, val = part.split(':', 1)
+                            summary_data[key.strip()] = val.strip()
+                    continue
+                
+                cells = row.find_all('td')
+                if len(cells) >= 4:
+                    c_status = cells[4].get_text(strip=True) if len(cells) > 4 else ""
+                    candidate_rows.append({
+                        "Sl No": cells[0].get_text(strip=True),
+                        "Candidate Name": cells[1].get_text(strip=True),
+                        "Party": cells[2].get_text(strip=True),
+                        "Votes": int(cells[3].get_text(strip=True)) if cells[3].get_text(strip=True).isdigit() else 0,
+                        "Status": c_status
+                    })
+
+            winner_data = None
+            status = "Pending"
+            for cand in candidate_rows:
+                if "elected" in cand['Status'].lower() or "won" in cand['Status'].lower():
+                    status = "Declared"
+                    winner_data = cand
+                    break
+
+            return {
+                "ward": ward_num,
+                "status": status,
+                "winner": winner_data,
+                "summary": summary_data,
+                "candidates": candidate_rows
+            }
+
+        except Exception as e:
+            if attempt == retries - 1:
+                return {"ward": ward_num, "status": "Connection Error", "candidates": []}
+            else:
+                time.sleep(2 ** attempt) 
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_all_data():
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_ward = {executor.submit(fetch_ward_data_with_retry, i): i for i in range(1, TOTAL_WARDS + 1)}
+        
+        bar = st.progress(0)
+        completed = 0
+        
+        for future in concurrent.futures.as_completed(future_to_ward):
+            results.append(future.result())
+            completed += 1
+            bar.progress(completed / TOTAL_WARDS)
+            
+        bar.empty()
+        
+    results.sort(key=lambda x: x['ward'])
+    return results
+
+# --- UI LOGIC ---
+
+# Main Dashboard View
+if st.session_state.view == 'dashboard':
+    
+    # 1. Mobile Friendly Header
+    head_col1, head_col2 = st.columns([3, 1])
+    
+    with head_col1:
+        st.title("🗳️ Tandur Election")
+        st.caption("Vikarabad District | Municipal Results 2026")
+        
+    with head_col2:
+        st.write("") 
+        if st.button("🔄 Refresh", type="primary", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    # 2. Data Fetching
+    if 'data' not in st.session_state:
+        with st.spinner("Connecting to TSEC Secure Server..."):
+            data = fetch_all_data()
+            st.session_state.data = data
+    else:
+        data = st.session_state.data
+
+    # 3. Summary Metrics with System Status
+    declared = sum(1 for d in data if d['status'] == 'Declared')
+    pending = sum(1 for d in data if d['status'] == 'Pending')
+    errors = sum(1 for d in data if d['status'] == 'Connection Error')
+    
+    with st.container(border=True):
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Declared", declared)
+        col2.metric("Pending", pending)
+        
+        if errors > 0:
+            col3.metric("Network Retrying", errors, delta_color="inverse")
+        else:
+            col3.metric("System Status", "Healthy")
+
+    st.markdown("### Wards Overview")
+
+    # 4. Grid Display - CHANGED TO 3 COLUMNS
+    cols_per_row = 3  # <--- Changed from 4 to 3 for larger mobile cards
+    rows = [data[i:i + cols_per_row] for i in range(0, len(data), cols_per_row)]
+
+    for row_items in rows:
+        cols = st.columns(cols_per_row)
+        for idx, item in enumerate(row_items):
+            with cols[idx]:
+                with st.container(border=True):
+                    c_head1, c_head2 = st.columns([3,1])
+                    c_head1.subheader(f"Ward {item['ward']}")
+                    
+                    if item['status'] == 'Declared':
+                        st.success("🏆 WON")
+                        if item['winner']:
+                            st.markdown(f"**{item['winner']['Candidate Name']}**")
+                            st.caption(f"{item['winner']['Party']}")
+                    elif item['status'] == 'Connection Error':
+                        st.error("⚠️ Error")
+                    else:
+                        st.warning("⏳ Pending")
+                        st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+                    
+                    if st.button("Details", key=f"btn_{item['ward']}", use_container_width=True):
+                        st.session_state.selected_ward = item
+                        st.session_state.view = 'detail'
+                        st.rerun()
+
+# Detail View
+elif st.session_state.view == 'detail':
+    ward = st.session_state.selected_ward
+    
+    col_back, col_title = st.columns([1, 4])
+    with col_back:
+        if st.button("⬅️ Back", use_container_width=True):
+            st.session_state.view = 'dashboard'
+            st.rerun()
+    with col_title:
+        st.subheader(f"Ward {ward['ward']} Report")
+    
+    summary = ward.get('summary', {})
+    
+    st.markdown("---")
+    
+    m1, m2 = st.columns(2)
+    m1.metric("Total Voters", summary.get('Total Voters in Municipality Ward', '-'))
+    m2.metric("Valid Votes", summary.get('Total Vaild Votes', '-'))
+    
+    m3, m4 = st.columns(2)
+    m3.metric("Reserved For", summary.get('Reserved for', '-'))
+    m4.metric("Rejected/NOTA", f"{summary.get('Rejected Votes', '0')} / {summary.get('NOTA Votes', '0')}")
+
+    st.markdown("### Candidate Table")
+    
+    if ward['candidates']:
+        df = pd.DataFrame(ward['candidates'])
+        
+        def style_rows(row):
+            styles = [''] * len(row)
+            if "Elected" in str(row['Status']):
+                styles = ['background-color: #d1e7dd; color: #0f5132; font-weight: bold'] * len(row)
+            return styles
+
+        st.dataframe(
+            df.style.apply(style_rows, axis=1), 
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Sl No": st.column_config.TextColumn("No.", width="small"),
+                "Candidate Name": st.column_config.TextColumn("Candidate Name", width="medium"),
+                "Party": st.column_config.TextColumn("Party", width="small"),
+                "Votes": st.column_config.NumberColumn("Votes", format="%d"),
+            }
+        )
+    else:
+        st.info("No detailed candidate data available yet.")
