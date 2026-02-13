@@ -225,7 +225,7 @@ if st.session_state.view == 'dashboard':
                 hide_index=True,
                 column_config={
                     "Party": st.column_config.TextColumn("Party Name"),
-                    "Wards Won": st.column_config.NumberColumn("Seats Won", format="%d 🏆")
+                    "Wards Won": st.column_config.NumberColumn("Seats Won", format="%d")
                 }
             )
             
@@ -240,7 +240,7 @@ if st.session_state.view == 'dashboard':
                         "field": "Party",
                         "type": "nominal",
                         "scale": {
-                            "domain": ["BJP",     "BRS",     "INC",     "Independent", "MIM",     "CPI"],
+                            "domain": ["BJP",     "BRS",     "INC",     "Independent", "AIMIM",     "CPI"],
                             "range":  ["#FF9933", "#FF3399", "#1F77B4", "#D62728",     "#008000", "#FF0000"] 
                         },
                         "legend": None
