@@ -21,7 +21,7 @@ BASE_URL = "https://tsec.gov.in/knowPRUrban.se"
 # --- PAGE CONFIG ---
 st.set_page_config(
     page_title="Tandur Election Tracker",
-    page_icon="🗳️",
+    page_icon=".//icons//ballot.png",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -167,12 +167,12 @@ if st.session_state.view == 'dashboard':
     head_col1, head_col2 = st.columns([3, 1])
     
     with head_col1:
-        st.title("🗳️ Tandur Election")
+        st.title("Tandur Election")
         st.caption("Vikarabad District | Municipal Results 2026")
         
     with head_col2:
         st.write("") 
-        if st.button("🔄 Refresh", type="primary", use_container_width=True):
+        if st.button("Refresh", type="primary", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
@@ -194,16 +194,70 @@ if st.session_state.view == 'dashboard':
         col1.metric("Declared", declared)
         col2.metric("Pending", pending)
         
-        # --- THE RESTORED LOGIC ---
         if errors > 0:
             col3.metric("Network Retrying", errors, delta_color="inverse")
         else:
             col3.metric("System Status", "Healthy")
 
+    # 4. PARTY PERFORMANCE SECTION
+    st.markdown("### Party Wise Performance")
+
+    # Calculate Party Counts
+    party_counts = {}
+    for item in data:
+        if item['status'] == 'Declared' and item['winner']:
+            party = item['winner']['Party']
+            if party.upper() == 'IND':
+                party = 'Independent'
+            party_counts[party] = party_counts.get(party, 0) + 1
+    
+    if party_counts:
+        # Create a clean DataFrame
+        df_party = pd.DataFrame(list(party_counts.items()), columns=['Party', 'Wards Won'])
+        df_party = df_party.sort_values(by='Wards Won', ascending=False).reset_index(drop=True)
+        
+        col_table, col_chart = st.columns([1, 2])
+        
+        with col_table:
+            st.dataframe(
+                df_party, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Party": st.column_config.TextColumn("Party Name"),
+                    "Wards Won": st.column_config.NumberColumn("Seats Won", format="%d 🏆")
+                }
+            )
+            
+        with col_chart:
+            # Custom Color Chart using Vega-Lite (No extra imports needed)
+            st.vega_lite_chart(df_party, {
+                "mark": {"type": "bar", "tooltip": True},
+                "encoding": {
+                    "x": {"field": "Party", "type": "nominal", "sort": "-y", "axis": {"title": "", "labelAngle": 0}},
+                    "y": {"field": "Wards Won", "type": "quantitative", "axis": {"title": ""}},
+                    "color": {
+                        "field": "Party",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["BJP",     "BRS",     "INC",     "Independent", "MIM",     "CPI"],
+                            "range":  ["#FF9933", "#FF3399", "#1F77B4", "#D62728",     "#008000", "#FF0000"] 
+                        },
+                        "legend": None
+                    }
+                }
+            }, use_container_width=True)
+            
+    else:
+        st.info("Waiting for results to be declared to generate party summary.")
+
+    st.markdown("---")
+
+    # 5. WARDS OVERVIEW SECTION
     st.markdown("### Wards Overview")
 
-    # 4. Grid Display
-    cols_per_row = 4
+    # Grid Display - 3 Columns for bigger cards
+    cols_per_row = 3
     rows = [data[i:i + cols_per_row] for i in range(0, len(data), cols_per_row)]
 
     for row_items in rows:
@@ -215,14 +269,14 @@ if st.session_state.view == 'dashboard':
                     c_head1.subheader(f"Ward {item['ward']}")
                     
                     if item['status'] == 'Declared':
-                        st.success("🏆 WON")
+                        st.success("WON")
                         if item['winner']:
                             st.markdown(f"**{item['winner']['Candidate Name']}**")
                             st.caption(f"{item['winner']['Party']}")
                     elif item['status'] == 'Connection Error':
-                        st.error("⚠️ Error")
+                        st.error("Error")
                     else:
-                        st.warning("⏳ Pending")
+                        st.warning("Pending")
                         st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
                     
                     if st.button("Details", key=f"btn_{item['ward']}", use_container_width=True):
@@ -236,7 +290,7 @@ elif st.session_state.view == 'detail':
     
     col_back, col_title = st.columns([1, 4])
     with col_back:
-        if st.button("⬅️ Back", use_container_width=True):
+        if st.button("Back", use_container_width=True):
             st.session_state.view = 'dashboard'
             st.rerun()
     with col_title:
